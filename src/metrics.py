@@ -14,14 +14,14 @@ def get_target_metric(y_true, y_pred, image_ids):
         for patient, y_true in patient_to_y_true.items()
     }
     patient_to_y_pred = {
-        patient: np.mean(y_pred, axis=0).tolist()
+        patient: np.mean(y_pred).tolist()
         for patient, y_pred in patient_to_y_pred.items()
     }
     y_true, y_pred = [], []
     for patient, y in patient_to_y_true.items():
         y_true.append(y)
         y_pred.append(patient_to_y_pred[patient])
-    return _weighted_mc_log_loss(y_true, np.array(y_pred))
+    return _weighted_mc_log_loss(y_true, np.array([[1 - p, p] for p in y_pred]))
 
 
 def _weighted_mc_log_loss(y_true, y_pred, epsilon=1e-15):

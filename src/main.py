@@ -20,7 +20,7 @@ from torchvision import transforms
 import config
 from data_loader import get_loader
 from data_preparation import DataPreparation
-from model import ClotModel
+from model import ClotModelSingle, ClotModelMIL
 from metrics import get_target_metric
 
 
@@ -62,10 +62,10 @@ def main() -> None:
         with open(DUMPED_DATALOADER_PATH, 'rb') as file:
             image_crops, image_crops_indices, colors = pickle.load(file)
 
-    data_prep.train = [data_prep.train[i] for i in config.INTERESTING_IDS]
-    data_prep.all_center_ids = sorted(list({center_id for _, _, center_id in data_prep.train}))
-    image_crops = [image_crops[i] for i in config.INTERESTING_IDS]
-    image_crops_indices = [image_crops_indices[i] for i in config.INTERESTING_IDS]
+    # data_prep.train = [data_prep.train[i] for i in config.INTERESTING_IDS]
+    # data_prep.all_center_ids = sorted(list({center_id for _, _, center_id in data_prep.train}))
+    # image_crops = [image_crops[i] for i in config.INTERESTING_IDS]
+    # image_crops_indices = [image_crops_indices[i] for i in config.INTERESTING_IDS]
 
     # image_crops = [[
     #     Image.fromarray(image_histogram_equalization(np.array(crop).astype(np.uint8)))
@@ -77,13 +77,16 @@ def main() -> None:
             transforms.RandomHorizontalFlip(),
             transforms.RandomVerticalFlip(),
             transforms.RandomAdjustSharpness(sharpness_factor=2, p=0.5),
-            transforms.GaussianBlur(kernel_size=(5, 5), sigma=(0.1, 2)),
-            transforms.ColorJitter(brightness=0.1, contrast=0.1, saturation=0.1, hue=0.1),
+            #transforms.GaussianBlur(kernel_size=(5, 5), sigma=(0.1, 2)),
+            transforms.ColorJitter(brightness=0.2, saturation=0.5, hue=0.5),
             transforms.ToTensor(),
             # transforms.Normalize(mean=[0.5], std=[0.5]),
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
         ]),
         'test': transforms.Compose([
+            transforms.RandomAdjustSharpness(sharpness_factor=2, p=0.5),
+            #transforms.GaussianBlur(kernel_size=(5, 5), sigma=(0.1, 2)),
+            transforms.ColorJitter(brightness=0.2, saturation=0.5, hue=0.5),
             transforms.ToTensor(),
             # transforms.Normalize(mean=[0.5], std=[0.5]),
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
@@ -130,7 +133,7 @@ def main() -> None:
                 is_test=False,
                 transformations=data_transforms['train'],
                 shuffle=True,
-                batch_size=8,
+                batch_size=64,
                 num_workers=2,
             ),
             'test': get_loader(
@@ -149,10 +152,10 @@ def main() -> None:
             ),
         }
 
-        model = ClotModel(encoder_model='effnet_b0').to(device)
+        model = ClotModelSingle(encoder_model='effnet_b0').to(device)
         model.freeze_encoder(True)
         criterion = nn.BCELoss()
-        optimizer = optim.Adam(model.model.classifier.parameters(), lr=1e-5, weight_decay=5e-4)
+        optimizer = optim.Adam(model.head.parameters(), lr=1e-3, weight_decay=5e-4)
 
         best_validation_metric = None
         best_y, best_y_hat, best_image_ids = [], [], []
@@ -160,9 +163,9 @@ def main() -> None:
         for epoch in range(config.EPOCHS_NUM):
             np.random.seed(epoch)
 
-            if epoch == 1:
-                model.freeze_encoder(False)
-                optimizer = optim.Adam(model.parameters(), lr=1e-6, weight_decay=5e-4)
+            #if epoch == 2:
+                # model.freeze_encoder(False)
+            #    optimizer = optim.Adam(model.parameters(), lr=1e-5, weight_decay=5e-4)
 
             print('*' * 80)
             print("epoch {}/{}".format(epoch + 1, config.EPOCHS_NUM))
@@ -192,7 +195,7 @@ def main() -> None:
             print('ROC AUC metric:', roc_auc_score(y, y_hat))
             target_metric = get_target_metric(
                 y,
-                np.array([[1 - p, p] for p in y_hat]),
+                y_hat,
                 dataloaders['train'].dataset.get_image_ids(),
             )
             print('target metric:', target_metric)
@@ -224,29 +227,36 @@ def main() -> None:
                 print('Validation:')
                 print(Counter([int(p > 0.5) for p in y_hat]))
                 print('ROC AUC metric:', roc_auc_score(y, y_hat))
-                original_val_length = len(dataloaders['test'].dataset.image_ids)
-                print('target metric:', get_target_metric(
-                    y[:original_val_length],
-                    np.array([[1 - p, p] for p in y_hat[:original_val_length]]),
-                    dataloaders['test'].dataset.get_image_ids()[:original_val_length],
-                ))
-                target_metric_x4 = get_target_metric(
+
+                # original_val_length = len(dataloaders['test'].dataset.image_ids)
+                # print('target metric:', get_target_metric(
+                #     y[:original_val_length],
+                #     y_hat[:original_val_length],
+                #     dataloaders['test'].dataset.get_image_ids()[:original_val_length],
+                # ))
+                target_metric = get_target_metric(
                     y,
-                    np.array([[1 - p, p] for p in y_hat]),
+                    y_hat,
                     dataloaders['test'].dataset.get_image_ids(),
                 )
-                print('target metric x4:', target_metric_x4)
-                if best_validation_metric is None or target_metric_x4 < best_validation_metric:
-                    best_validation_metric = target_metric_x4
+                print('target metric:', target_metric)
+                if best_validation_metric is None or target_metric < best_validation_metric:
+                    best_validation_metric = target_metric
                     best_y, best_y_hat, best_image_ids = y, y_hat, dataloaders['test'].dataset.get_image_ids()
+                    torch.save(
+                        model,
+                        os.path.join(
+                            'models',
+                            f'center_id_{test_center_id}_epoch_{epoch}_target_{round(target_metric, 3)}.h5',
+                        ),
+                    )
 
                 epoch_score = running_score / len(dataloaders['test'].dataset)
                 epoch_loss = running_loss / len(dataloaders['test'].dataset)
                 val_loss.append(epoch_loss)
                 print("loss: {}, accuracy: {}".format(epoch_loss, epoch_score))
-                # torch.save(model, os.path.join('models', f'epoch_{epoch}_targetx4_{round(target_metric_x4, 3)}.h5'))
 
-        print(f'Best validation x4 metric: {best_validation_metric}')
+        print(f'Best validation metric: {best_validation_metric}')
         all_metrics.append(best_validation_metric)
         all_y.extend(best_y)
         all_y_hat.extend(best_y_hat)
@@ -254,8 +264,12 @@ def main() -> None:
 
     print(all_metrics)
     print(np.mean(all_metrics))
-    final_metric = get_target_metric(all_y, np.array([[1 - p, p] for p in all_y_hat]), all_image_ids)
-    print('Full validation x4 metric:', final_metric)
+    final_metric = get_target_metric(
+        all_y,
+        all_y_hat,
+        all_image_ids,
+    )
+    print('Full validation metric:', final_metric)
 
 
 if __name__ == "__main__":

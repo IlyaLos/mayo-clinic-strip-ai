@@ -1,3 +1,4 @@
+import random
 from collections import defaultdict
 from typing import List, Tuple
 
@@ -39,7 +40,7 @@ class ClotImageDataset(torch.utils.data.Dataset):
                 if len(crops) > 0:
                     label_to_indices[label].append(i)
 
-            max_size = max(len(indices) for indices in label_to_indices.values())
+            max_size = 4 * max(len(indices) for indices in label_to_indices.values())
 
             self.sample_ids = []
             for i, indices in enumerate(label_to_indices.values()):
@@ -49,7 +50,7 @@ class ClotImageDataset(torch.utils.data.Dataset):
                     self.sample_ids += indices[:req_size]
         else:
             self.sample_ids = []
-            for _ in range(4):
+            for _ in range(8):
                 self.sample_ids.extend(list(range(len(self.image_ids))))
 
     @staticmethod
@@ -97,6 +98,8 @@ class ClotImageDataset(torch.utils.data.Dataset):
     def __getitem__(self, idx):
         if self.is_test:
             np.random.seed(self.seed + idx)
+            random.seed(self.seed + idx)
+            torch.manual_seed(self.seed + idx)
         idx = self.sample_ids[idx]
         if len(self.image_crops[idx]) == 0:
             return self.transformations(Image.fromarray(np.zeros((224, 224, 1)))), torch.tensor(0.0)
