@@ -59,6 +59,10 @@ class ClotModelSingle(nn.Module):
             base_model = models.resnet18(weights=models.ResNet18_Weights.IMAGENET1K_V1)
             self.model = nn.Sequential(*list(base_model.children())[:-2])
             in_features_cnt = list(base_model.children())[-1].in_features
+        elif encoder_model == 'regnet_x_1_6gf':
+            base_model = models.regnet_x_1_6gf(weights=models.RegNet_X_1_6GF_Weights.IMAGENET1K_V2)
+            self.model = nn.Sequential(base_model.stem, base_model.trunk_output)
+            in_features_cnt = base_model.fc.in_features
         else:
             raise Exception('Incorrect encoder name')
 
