@@ -27,10 +27,10 @@ class DataPreparation:
         self.train = self._filter_bad_images(train_metadata)
         self.all_center_ids = sorted(list({center_id for _, _, center_id in self.train}))
 
-        other_metadata = pd.read_csv('data/other.csv')
+        other_metadata = pd.read_csv('data/other.csv').query('label == \'Other\'')
         other_metadata = list(zip(
             other_metadata['image_id'].tolist(),
-            other_metadata['label'].tolist(),
+            ['LAA' for _ in range(other_metadata.shape[0])],
             [-1 for _ in range(other_metadata.shape[0])],
         ))
         self.other = self._filter_bad_images(other_metadata)
@@ -265,4 +265,7 @@ class DataPreparation:
     def process_other(
             self
     ) -> Tuple[List[List[np.ndarray]], List[List[Tuple[int]]], List[Tuple[np.ndarray, np.ndarray]]]:
-        return self.prepare_crops([image_id for image_id, _, _ in self.other], 'data/other/')
+        return self.prepare_crops(
+            [image_id for image_id, _, _ in self.other],
+            '/Volumes/TOSHIBA EXT/mayo-clinic-strip-ai/data/other/',
+        )

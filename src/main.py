@@ -28,6 +28,7 @@ ssl._create_default_https_context = ssl._create_unverified_context
 cudnn.benchmark = True
 
 DUMPED_DATALOADER_PATH = 'data/data_loaders.pkl'
+DUMPED_DATALOADER_OTHER_PATH = 'data/data_loaders_other.pkl'
 
 
 def get_sub_data(data, image_crops, image_crops_indices, sample_ids):
@@ -38,86 +39,68 @@ def get_sub_data(data, image_crops, image_crops_indices, sample_ids):
         [image_crops_indices[i] for i in sample_ids]
 
 
-def image_histogram_equalization(image, number_bins=256):
-    # from http://www.janeriksolem.net/histogram-equalization-with-python-and.html
-
-    # get image histogram
-    image_histogram, bins = np.histogram(image.flatten(), number_bins, density=True)
-    cdf = image_histogram.cumsum() # cumulative distribution function
-    cdf = (number_bins-1) * cdf / cdf[-1] # normalize
-
-    # use linear interpolation of cdf to find new pixel values
-    image_equalized = np.interp(image.flatten(), bins[:-1], cdf)
-
-    return image_equalized.reshape(image.shape)
-
-
 def main() -> None:
     data_prep = DataPreparation()
+
     if (len(sys.argv) > 1 and sys.argv[1] == 'recalc') or not os.path.exists(DUMPED_DATALOADER_PATH):
         image_crops, image_crops_indices, colors = data_prep.process_train()
         with open(DUMPED_DATALOADER_PATH, 'wb') as file:
             pickle.dump([image_crops, image_crops_indices, colors], file)
+
+        image_crops, image_crops_indices, colors = data_prep.process_other()
+        with open(DUMPED_DATALOADER_OTHER_PATH, 'wb') as file:
+            pickle.dump([image_crops, image_crops_indices, colors], file)
     else:
         with open(DUMPED_DATALOADER_PATH, 'rb') as file:
             image_crops, image_crops_indices, colors = pickle.load(file)
-
-    # data_prep.train = [data_prep.train[i] for i in config.INTERESTING_IDS]
-    # data_prep.all_center_ids = sorted(list({center_id for _, _, center_id in data_prep.train}))
-    # image_crops = [image_crops[i] for i in config.INTERESTING_IDS]
-    # image_crops_indices = [image_crops_indices[i] for i in config.INTERESTING_IDS]
-
-    # image_crops = [[
-    #     Image.fromarray(image_histogram_equalization(np.array(crop).astype(np.uint8)))
-    #     for crop in crops
-    # ] for crops in tqdm(image_crops)]
+        with open(DUMPED_DATALOADER_OTHER_PATH, 'rb') as file:
+            image_crops_other, image_crops_indices_other, colors_other = pickle.load(file)
 
     data_transforms = {
         'train': transforms.Compose([
             transforms.RandomHorizontalFlip(),
             transforms.RandomVerticalFlip(),
+            # transforms.RandomResizedCrop((224, 224), scale=(0.5, 1.0), ratio=(1.0, 1.0)),
             transforms.RandomAdjustSharpness(sharpness_factor=2, p=1.0),
             transforms.RandomAdjustSharpness(sharpness_factor=2, p=0.5),
             transforms.ColorJitter(brightness=0.2, saturation=0.5, hue=0.5),
-            # transforms.RandomAutocontrast(p=0.5),
-            # transforms.RandomEqualize(p=0.5),
-            #transforms.GaussianBlur(kernel_size=(5, 5), sigma=(0.1, 2)),
             transforms.ToTensor(),
-            # transforms.Normalize(mean=[0.5], std=[0.5]),
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
         ]),
         'test': transforms.Compose([
+            # transforms.RandomResizedCrop((224, 224), scale=(0.5, 1.0), ratio=(1.0, 1.0)),
             transforms.RandomAdjustSharpness(sharpness_factor=2, p=1.0),
             transforms.RandomAdjustSharpness(sharpness_factor=2, p=0.5),
             transforms.ColorJitter(brightness=0.2, saturation=0.5, hue=0.5),
-            # transforms.RandomAutocontrast(p=0.5),
-            # transforms.RandomEqualize(p=0.5),
-            #transforms.GaussianBlur(kernel_size=(5, 5), sigma=(0.1, 2)),
             transforms.ToTensor(),
-            # transforms.Normalize(mean=[0.5], std=[0.5]),
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
         ]),
     }
 
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
+    train_data = data_prep.train + data_prep.other
+    image_crops += image_crops_other
+    image_crops_indices += image_crops_indices_other
+    colors += colors_other
+
     all_metrics = []
     all_y, all_y_hat, all_image_ids = [], [], []
-    for test_center_id in data_prep.all_center_ids:
+    for test_center_id in {center_id for _, _, center_id in train_data if center_id != -1}:
         for _ in range(3):
             print('-' * 80)
         print(f'CV with {test_center_id} as test')
-        train_sample_ids = [i for i, (_, _, center_id) in enumerate(data_prep.train) if center_id != test_center_id]
-        test_sample_ids = [i for i, (_, _, center_id) in enumerate(data_prep.train) if center_id == test_center_id]
+        train_sample_ids = [i for i, (_, _, center_id) in enumerate(train_data) if center_id != test_center_id]
+        test_sample_ids = [i for i, (_, _, center_id) in enumerate(train_data) if center_id == test_center_id]
 
         train_image_ids, train_labels, train_center_ids, train_crops, train_crop_indices = get_sub_data(
-            data_prep.train,
+            train_data,
             image_crops,
             image_crops_indices,
             train_sample_ids
         )
         test_image_ids, test_labels, test_center_ids, test_crops, test_crop_indices = get_sub_data(
-            data_prep.train,
+            train_data,
             image_crops,
             image_crops_indices,
             test_sample_ids
@@ -169,9 +152,8 @@ def main() -> None:
         for epoch in range(config.EPOCHS_NUM):
             np.random.seed(epoch)
 
-            #if epoch == 2:
-                # model.freeze_encoder(False)
-            #    optimizer = optim.Adam(model.parameters(), lr=1e-5, weight_decay=5e-4)
+            if epoch == 10:
+                optimizer = optim.Adam(model.parameters(), lr=1e-4, weight_decay=5e-4)
 
             print('*' * 80)
             print("epoch {}/{}".format(epoch + 1, config.EPOCHS_NUM))
@@ -234,12 +216,6 @@ def main() -> None:
                 print(Counter([int(p > 0.5) for p in y_hat]))
                 print('ROC AUC metric:', roc_auc_score(y, y_hat))
 
-                # original_val_length = len(dataloaders['test'].dataset.image_ids)
-                # print('target metric:', get_target_metric(
-                #     y[:original_val_length],
-                #     y_hat[:original_val_length],
-                #     dataloaders['test'].dataset.get_image_ids()[:original_val_length],
-                # ))
                 target_metric = get_target_metric(
                     y,
                     y_hat,
@@ -275,6 +251,9 @@ def main() -> None:
         all_y_hat,
         all_image_ids,
     )
+    np.save('data/all_y.npy', all_y)
+    np.save('data/all_y_hat.npy', all_y_hat)
+    np.save('data/all_image_ids.npy', all_image_ids)
     print('Full validation metric:', final_metric)
 
 
