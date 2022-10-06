@@ -1,9 +1,14 @@
 from collections import defaultdict
+from typing import List, Tuple
 
 import numpy as np
 
 
-def get_target_metric(y_true, y_pred, image_ids):
+def _group_by_patients(
+        y_true: List[float],
+        y_pred: List[float],
+        image_ids: List[str],
+) -> Tuple[List[float], np.ndarray, List[str]]:
     patients = [image_id.split('_')[0] for image_id in image_ids]
     patient_to_y_true, patient_to_y_pred = defaultdict(list), defaultdict(list)
     for y, y_hat, patient in zip(y_true, y_pred, patients):
@@ -17,14 +22,20 @@ def get_target_metric(y_true, y_pred, image_ids):
         patient: np.mean(y_pred).tolist()
         for patient, y_pred in patient_to_y_pred.items()
     }
-    y_true, y_pred = [], []
+    y_true, y_pred, patients = [], [], []
     for patient, y in patient_to_y_true.items():
         y_true.append(y)
         y_pred.append(patient_to_y_pred[patient])
-    return _weighted_mc_log_loss(y_true, np.array([[1 - p, p] for p in y_pred]))
+        patients.append(patient)
+
+    return y_true, np.array([[1 - p, p] for p in y_pred]), patients
 
 
-def _weighted_mc_log_loss(y_true, y_pred, epsilon=1e-15):
+def get_target_metric(y_true: List[float], y_pred: List[float], image_ids: List[str]) -> float:
+    return _weighted_mc_log_loss(*_group_by_patients(y_true, y_pred, image_ids)[:2])
+
+
+def _weighted_mc_log_loss(y_true: List[float], y_pred: np.ndarray, epsilon: float = 1e-15) -> float:
     class_cnt = [sum(int(val == cl) for val in y_true) for cl in range(2)]
     w = [0.5 for _ in range(2)]
     return -sum(

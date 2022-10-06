@@ -5,11 +5,10 @@ from typing import List, Tuple
 
 import numpy as np
 import pandas as pd
+import pyvips
 from PIL import Image
 from tqdm import tqdm
 
-import skimage.io as io
-import cv2
 import config
 
 
@@ -18,7 +17,7 @@ class DataPreparation:
         self.visualize = visualize
         self.seed = seed
 
-        train_metadata = pd.read_csv('data/train.csv')
+        train_metadata = pd.read_csv('/kaggle/input/mayo-clinic-strip-ai/train.csv')
         train_metadata = list(zip(
             train_metadata['image_id'].tolist(),
             train_metadata['label'].tolist(),
@@ -27,13 +26,20 @@ class DataPreparation:
         self.train = self._filter_bad_images(train_metadata)
         self.all_center_ids = sorted(list({center_id for _, _, center_id in self.train}))
 
-        other_metadata = pd.read_csv('data/other.csv').query('label == \'Other\'')
+        other_metadata = pd.read_csv('/kaggle/input/mayo-clinic-strip-ai/other.csv').query('label == \'Other\'')
         other_metadata = list(zip(
             other_metadata['image_id'].tolist(),
             ['LAA' for _ in range(other_metadata.shape[0])],
             [-1 for _ in range(other_metadata.shape[0])],
         ))
         self.other = self._filter_bad_images(other_metadata)
+
+        test_metadata = pd.read_csv('/kaggle/input/mayo-clinic-strip-ai/test.csv')
+        self.test = list(zip(
+            test_metadata['image_id'].tolist(),
+            ['Unknown' for _ in range(test_metadata.shape[0])],
+            test_metadata['center_id'].tolist(),
+        ))
 
     @staticmethod
     def _filter_bad_images(data: List[Tuple]) -> List[Tuple]:
@@ -73,57 +79,12 @@ class DataPreparation:
                     (block_sum / config.BLOCK_SIZE / config.BLOCK_SIZE) > config.BLOCK_THR
         return blocks_map
 
-    @staticmethod
-    def _get_mean_color_by_block(image: np.ndarray) -> np.ndarray:
-        colors_cum_sum = np.cumsum(np.cumsum(image, axis=0), axis=1)
-        mean_color_by_block = np.zeros((
-            (image.shape[0] + config.BLOCK_SIZE - 1) // config.BLOCK_SIZE,
-            (image.shape[1] + config.BLOCK_SIZE - 1) // config.BLOCK_SIZE,
-            3,
-        ))
-        for x in range(0, image.shape[0], config.BLOCK_SIZE):
-            for y in range(0, image.shape[1], config.BLOCK_SIZE):
-                nx = min(x + config.BLOCK_SIZE, image.shape[0])
-                ny = min(y + config.BLOCK_SIZE, image.shape[1])
-                block_sum = colors_cum_sum[nx - 1, ny - 1, :].flatten()
-                if x:
-                    block_sum -= colors_cum_sum[x - 1, ny - 1, :].flatten()
-                if y:
-                    block_sum -= colors_cum_sum[nx - 1, y - 1, :].flatten()
-                if x and y:
-                    block_sum += colors_cum_sum[x - 1, y - 1, :].flatten()
-                mean_color_by_block[x // config.BLOCK_SIZE, y // config.BLOCK_SIZE, :] = \
-                    block_sum / config.BLOCK_SIZE / config.BLOCK_SIZE
-        return mean_color_by_block
-
-    def _get_color_std(
-            self,
-            image: np.ndarray,
-            color_mean: np.ndarray,
-            blocks_map: np.ndarray,
-            value: int,
-    ) -> np.ndarray:
-        color_std_sum_by_block = self._get_mean_color_by_block((image - color_mean) ** 2)
-        color_std_sum = np.sum(color_std_sum_by_block[blocks_map == value], axis=0)
-        blocks_cnt = len(np.where(blocks_map == value)[0])
-        return np.sqrt(color_std_sum / blocks_cnt)
-
     def _generate_crops_positions(
             self,
             image: np.ndarray,
             crop_thr: float,
-    ) -> Tuple[List[Tuple[int, int]], np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    ) -> List[Tuple[int, int]]:
         blocks_map = self._get_blocks_map(image)
-        mean_color_by_block = self._get_mean_color_by_block(image)
-        blood_color_mean = np.mean(mean_color_by_block[blocks_map == 1], axis=0)
-        background_color_mean = np.mean(mean_color_by_block[blocks_map == 0], axis=0)
-
-        # blood_color_std = self._get_color_std(image, blood_color_mean, blocks_map, 1)
-        # background_color_std = self._get_color_std(image, background_color_mean, blocks_map, 0)
-
-        min_color, max_color = np.zeros(3), np.zeros(3)
-        # min_color = np.maximum(blood_color_mean - 2 * blood_color_std, 0).astype(int)
-        # max_color = np.minimum(blood_color_mean + 2 * blood_color_std, background_color_mean).astype(int)
 
         if self.visualize:
             for i in range(blocks_map.shape[0]):
@@ -149,26 +110,21 @@ class DataPreparation:
             for x, y in good_crops_starts:
                 self._add_rect_to_numpy(image, x, y, config.CROP_SIZE, 1)
 
-        return good_crops_starts, min_color, max_color, background_color_mean, blood_color_mean
+        return good_crops_starts
 
     @staticmethod
-    def _process_crop(crop: np.ndarray, min_color: np.ndarray, max_color: np.ndarray) -> np.ndarray:
+    def _process_crop(crop: np.ndarray) -> np.ndarray:
         return crop
-        #normalized_rgb_crop = np.clip((crop - min_color) / (max_color - min_color) * 255, 0, 255)
-        #rgb_to_grayscale_coefficients = [0.2989, 0.5870, 0.1140]
-        #return np.clip(np.sum(normalized_rgb_crop * rgb_to_grayscale_coefficients, axis=2), 0, 255)
 
     def _create_crops(
-        self,
-        image: np.ndarray,
-        crops_starts: List[Tuple[int]],
-        min_color: np.ndarray,
-        max_color: np.ndarray,
+            self,
+            image: np.ndarray,
+            crops_starts: List[Tuple[int]],
     ) -> List[np.ndarray]:
         return [
             Image.fromarray(
                 self._process_crop(
-                    image[x:x + config.CROP_SIZE, y:y + config.CROP_SIZE], min_color, max_color,
+                    image[x:x + config.CROP_SIZE, y:y + config.CROP_SIZE],
                 )
             )
             for x, y in crops_starts
@@ -199,26 +155,28 @@ class DataPreparation:
             final_crop_starts.append(crop_start)
         return final_crop_starts
 
+    @staticmethod
+    def _read_and_resize_image(image_id: str, base_image_path: str) -> np.ndarray:
+        image_path = os.path.join(base_image_path, f'{image_id}.tif')
+        image = pyvips.Image.new_from_file(image_path, access='sequential')
+        return image.resize(1.0 / config.SCALE_FACTOR).numpy()
+
     def prepare_crops(
             self,
             image_ids: List[int],
             base_image_path: str,
-    ) -> Tuple[List[List[np.ndarray]], List[List[Tuple[int]]], List[Tuple[np.ndarray, np.ndarray]]]:
+    ) -> Tuple[List[List[np.ndarray]], List[List[Tuple[int]]]]:
         np.random.seed(self.seed)
         image_crops = []
         image_crops_indices = []
-        colors = []
         for image_id in tqdm(image_ids):
             start_time = time()
-            image_path = os.path.join(base_image_path, f'{image_id}.tif')
-            image = io.imread(image_path)
-            image = cv2.resize(image, dsize=None, fx=1/config.SCALE_FACTOR, fy=1/config.SCALE_FACTOR,
-                               interpolation=cv2.INTER_AREA)
+            image = self._read_and_resize_image(image_id, base_image_path)
+            gc.collect()
             print(f'Rescaling done in {time() - start_time} seconds. Image shape is {image.shape}')
             found_flag = False
-            for crop_thr in np.arange(config.CROP_THR, 0, -0.1):
-                good_crops_starts, min_color, max_color, background_color_mean, blood_color_mean = \
-                    self._generate_crops_positions(image, crop_thr)
+            for crop_thr in np.arange(config.CROP_THR, -0.1, -0.1):
+                good_crops_starts = self._generate_crops_positions(image, crop_thr)
                 if len(good_crops_starts) < config.IMAGES_PER_SAMPLE:
                     print('Bad image', image_id, 'crop_thr', crop_thr, 'only', len(good_crops_starts))
                     continue
@@ -226,8 +184,6 @@ class DataPreparation:
                 good_crops_starts_unique = []
                 for order in [
                     lambda x: (x[0], x[1]),
-                    lambda x: (-x[0], x[1]),
-                    lambda x: (x[0], -x[1]),
                     lambda x: (-x[0], -x[1]),
                 ]:
                     good_crops_starts_unique.extend(self._get_unique_crops(good_crops_starts, order))
@@ -244,28 +200,37 @@ class DataPreparation:
                 )
                 good_crops_starts_sample = np.array(good_crops_starts_unique)[good_crops_starts_sample_ids]
                 image_crops_indices.append(good_crops_starts_sample)
-                image_crops.append(self._create_crops(image, good_crops_starts_sample, min_color, max_color))
-                colors.append((background_color_mean, blood_color_mean))
+                image_crops.append(self._create_crops(image, good_crops_starts_sample))
                 found_flag = True
                 break
             if not found_flag:
                 image_crops_indices.append([])
                 image_crops.append([])
-                colors.append([])
                 print('No crops was found')
             print(f'Done {image_id} in {time() - start_time} seconds')
         gc.collect()
-        return image_crops, image_crops_indices, colors
+        return image_crops, image_crops_indices
 
     def process_train(
             self
-    ) -> Tuple[List[List[np.ndarray]], List[List[Tuple[int]]], List[Tuple[np.ndarray, np.ndarray]]]:
-        return self.prepare_crops([image_id for image_id, _, _ in self.train], 'data/train/')
+    ) -> Tuple[List[List[np.ndarray]], List[List[Tuple[int]]]]:
+        return self.prepare_crops(
+            [image_id for image_id, _, _ in self.train],
+            '/kaggle/input/mayo-clinic-strip-ai/train/',
+        )
 
     def process_other(
             self
-    ) -> Tuple[List[List[np.ndarray]], List[List[Tuple[int]]], List[Tuple[np.ndarray, np.ndarray]]]:
+    ) -> Tuple[List[List[np.ndarray]], List[List[Tuple[int]]]]:
         return self.prepare_crops(
             [image_id for image_id, _, _ in self.other],
-            '/Volumes/TOSHIBA EXT/mayo-clinic-strip-ai/data/other/',
+            '/kaggle/input/mayo-clinic-strip-ai/other/',
+        )
+
+    def process_test(
+            self
+    ) -> Tuple[List[List[np.ndarray]], List[List[Tuple[int]]]]:
+        return self.prepare_crops(
+            [image_id for image_id, _, _ in self.test],
+            '/kaggle/input/mayo-clinic-strip-ai/test',
         )
