@@ -13,11 +13,12 @@ import config
 
 
 class DataPreparation:
-    def __init__(self, visualize: bool = False, seed: int = 42):
+    def __init__(self, input_data_path: str, visualize: bool = False, seed: int = 42):
+        self.input_data_path = input_data_path
         self.visualize = visualize
         self.seed = seed
 
-        train_metadata = pd.read_csv('/kaggle/input/mayo-clinic-strip-ai/train.csv')
+        train_metadata = pd.read_csv(os.path.join(self.input_data_path, 'train.csv'))
         train_metadata = list(zip(
             train_metadata['image_id'].tolist(),
             train_metadata['label'].tolist(),
@@ -26,7 +27,7 @@ class DataPreparation:
         self.train = self._filter_bad_images(train_metadata)
         self.all_center_ids = sorted(list({center_id for _, _, center_id in self.train}))
 
-        other_metadata = pd.read_csv('/kaggle/input/mayo-clinic-strip-ai/other.csv').query('label == \'Other\'')
+        other_metadata = pd.read_csv(os.path.join(self.input_data_path, 'other.csv')).query('label == \'Other\'')
         other_metadata = list(zip(
             other_metadata['image_id'].tolist(),
             ['LAA' for _ in range(other_metadata.shape[0])],
@@ -34,7 +35,7 @@ class DataPreparation:
         ))
         self.other = self._filter_bad_images(other_metadata)
 
-        test_metadata = pd.read_csv('/kaggle/input/mayo-clinic-strip-ai/test.csv')
+        test_metadata = pd.read_csv(os.path.join(self.input_data_path, 'test.csv'))
         self.test = list(zip(
             test_metadata['image_id'].tolist(),
             ['Unknown' for _ in range(test_metadata.shape[0])],
@@ -216,7 +217,7 @@ class DataPreparation:
     ) -> Tuple[List[List[np.ndarray]], List[List[Tuple[int]]]]:
         return self.prepare_crops(
             [image_id for image_id, _, _ in self.train],
-            '/kaggle/input/mayo-clinic-strip-ai/train/',
+            os.path.join(self.input_data_path, 'train/'),
         )
 
     def process_other(
@@ -224,7 +225,7 @@ class DataPreparation:
     ) -> Tuple[List[List[np.ndarray]], List[List[Tuple[int]]]]:
         return self.prepare_crops(
             [image_id for image_id, _, _ in self.other],
-            '/kaggle/input/mayo-clinic-strip-ai/other/',
+            os.path.join(self.input_data_path, 'other/'),
         )
 
     def process_test(
@@ -232,5 +233,5 @@ class DataPreparation:
     ) -> Tuple[List[List[np.ndarray]], List[List[Tuple[int]]]]:
         return self.prepare_crops(
             [image_id for image_id, _, _ in self.test],
-            '/kaggle/input/mayo-clinic-strip-ai/test',
+            os.path.join(self.input_data_path, 'test/'),
         )

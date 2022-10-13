@@ -1,11 +1,13 @@
 from __future__ import print_function, division
 
+import json
 import os
 import pickle
+import ssl
+import sys
 from collections import Counter, defaultdict
 
 import numpy as np
-import ssl
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -24,10 +26,6 @@ from model import ClotModelSingle
 ssl._create_default_https_context = ssl._create_unverified_context
 cudnn.benchmark = True
 
-DUMPED_DATALOADER_PATH = '/kaggle/input/track-4-dataprep/data_loaders.pkl'
-DUMPED_DATALOADER_OTHER_PATH = '/kaggle/input/track-4-dataprep/data_loaders_other.pkl'
-CENTER_GROUPS = [(11,), (4,), (7,), (1, 5,), (10, 3), (6, 2, 8, 9,)]
-
 
 def _get_sub_data(data, image_crops, image_crops_indices, sample_ids):
     return [data[i][0] for i in sample_ids], \
@@ -37,10 +35,10 @@ def _get_sub_data(data, image_crops, image_crops_indices, sample_ids):
            [image_crops_indices[i] for i in sample_ids]
 
 
-def remove_bad_model_files() -> None:
+def remove_bad_model_files(models_folder) -> None:
     model_files = [
         file_name
-        for file_name in list(os.listdir('/kaggle/working/models'))
+        for file_name in list(os.listdir(models_folder))
         if file_name.endswith('.h5')
     ]
 
@@ -61,15 +59,21 @@ def remove_bad_model_files() -> None:
     good_models = set(list(center_id_to_best_model_file_name.values()))
     for model_file in model_files:
         if model_file not in good_models:
-            os.remove(os.path.join('/kaggle/working/models', model_file))
+            os.remove(os.path.join(models_folder, model_file))
 
 
 def main() -> None:
-    data_prep = DataPreparation()
+    settings_file_path = 'SETTINGS.json'
+    if len(sys.argv) > 1:
+        settings_file_path = sys.argv[1]
+    with open(settings_file_path, 'r') as file:
+        settings = json.load(file)
 
-    with open(DUMPED_DATALOADER_PATH, 'rb') as file:
+    data_prep = DataPreparation(settings['INPUT_DATA_PATH'])
+
+    with open(settings['DUMPED_DATALOADER_PATH'], 'rb') as file:
         image_crops, image_crops_indices = pickle.load(file)
-    with open(DUMPED_DATALOADER_OTHER_PATH, 'rb') as file:
+    with open(settings['DUMPED_DATALOADER_OTHER_PATH'], 'rb') as file:
         image_crops_other, image_crops_indices_other = pickle.load(file)
 
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
@@ -80,7 +84,7 @@ def main() -> None:
 
     all_metrics = []
     all_y, all_y_hat, all_image_ids = [], [], []
-    for test_centers_group in CENTER_GROUPS:
+    for test_centers_group in config.CENTER_GROUPS:
         best_validation_metric = None
         best_y, best_y_hat, best_image_ids = [], [], []
         for iteration in range(3):
@@ -228,7 +232,7 @@ def main() -> None:
                         torch.save(
                             model,
                             os.path.join(
-                                '/kaggle/working/models',
+                                settings['MODELS_PATH'],
                                 f'center_id_{test_centers_group_str}_epoch_{epoch}_target_{round(target_metric, 3)}.h5',
                             ),
                         )
@@ -251,12 +255,9 @@ def main() -> None:
         all_y_hat,
         all_image_ids,
     )
-    np.save('/kaggle/working/all_y.npy', all_y)
-    np.save('/kaggle/working/all_y_hat.npy', all_y_hat)
-    np.save('/kaggle/working/all_image_ids.npy', all_image_ids)
     print('Full validation metric:', final_metric)
 
-    remove_bad_model_files()
+    remove_bad_model_files(settings['MODELS_PATH'])
 
 
 if __name__ == "__main__":

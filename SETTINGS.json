@@ -1,0 +1,7 @@
+{
+  "INPUT_DATA_PATH": "data/",
+  "DUMPED_DATALOADER_PATH": "data/data_loaders.pkl",
+  "DUMPED_DATALOADER_OTHER_PATH": "data/data_loaders_other.pkl",
+  "MODELS_PATH": "models/",
+  "SUBMISSION_PATH": "data/"
+}

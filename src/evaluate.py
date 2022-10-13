@@ -1,24 +1,25 @@
 from __future__ import print_function, division
 
+import json
 import os
+import ssl
+import sys
 
 import pandas as pd
-import ssl
 import torch
 import torch.backends.cudnn as cudnn
 from tqdm import tqdm
 
+import config
 from data_loader import get_loader
 from data_preparation import DataPreparation
 from data_transforms import test_transforms
 from metrics import _group_by_patients
+from model import ClotModelSingle
 
 
 ssl._create_default_https_context = ssl._create_unverified_context
 cudnn.benchmark = True
-
-MODELS_PATH = '/kaggle/input/track4-train/models/'
-CENTER_IDS = ['1.5', '10.3', '11', '4', '6.2.8.9', '7']
 
 
 def _get_model_path_by_center_id(folder_name: str, center_id: str) -> str:
@@ -31,7 +32,13 @@ def _get_model_path_by_center_id(folder_name: str, center_id: str) -> str:
 
 
 def main() -> None:
-    data_prep = DataPreparation()
+    settings_file_path = 'SETTINGS.json'
+    if len(sys.argv) > 1:
+        settings_file_path = sys.argv[1]
+    with open(settings_file_path, 'r') as file:
+        settings = json.load(file)
+
+    data_prep = DataPreparation(settings['INPUT_DATA_PATH'])
     image_crops, _ = data_prep.process_test()
 
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
@@ -48,9 +55,13 @@ def main() -> None:
         num_workers=2,
     )
 
+    center_ids = ['.'.join([str(x) for x in group]) for group in config.CENTER_GROUPS]
     models = [
-        torch.load(_get_model_path_by_center_id(MODELS_PATH, center_id), map_location=torch.device('cpu')).to(device)
-        for center_id in CENTER_IDS
+        torch.load(
+            _get_model_path_by_center_id(settings['MODELS_PATH'], center_id),
+            map_location=torch.device('cpu'),
+        ).to(device)
+        for center_id in center_ids
     ]
     for model in models:
         model.eval()
@@ -82,7 +93,7 @@ def main() -> None:
         'LAA': [pair[0].round(6) for pair in preds],
     })
     print(result)
-    result.to_csv('submission.csv', index=False)
+    result.to_csv(os.path.join(settings['SUBMISSION_PATH'], 'submission.csv'), index=False)
 
 
 if __name__ == "__main__":
